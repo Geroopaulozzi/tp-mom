@@ -9,10 +9,25 @@ from .middleware import (
 )
 
 
+def _build_pika_callback(on_message_callback):
+    """
+    Wrappea el callback de pika para exponer la interfaz (message, ack, nack)
+    definida por la clase abstracta, ocultando los detalles de pika al consumidor.
+    """
+    def _callback(ch, method, properties, body):
+        ack = lambda: ch.basic_ack(delivery_tag=method.delivery_tag)
+        nack = lambda: ch.basic_nack(delivery_tag=method.delivery_tag)
+        on_message_callback(body, ack, nack)
+    return _callback
+
+
 class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
     def __init__(self, host, queue_name):
         self._queue_name = queue_name
+        self._channel = None
+        self._connection = None
+
         try:
             self._connection = pika.BlockingConnection(
                 pika.ConnectionParameters(host=host)
@@ -28,15 +43,10 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
         self.close()
 
     def start_consuming(self, on_message_callback):
-        def _callback(ch, method, properties, body):
-            ack = lambda: ch.basic_ack(delivery_tag=method.delivery_tag)
-            nack = lambda: ch.basic_nack(delivery_tag=method.delivery_tag)
-            on_message_callback(body, ack, nack)
-
         try:
             self._channel.basic_consume(
                 queue=self._queue_name,
-                on_message_callback=_callback,
+                on_message_callback=_build_pika_callback(on_message_callback),
                 auto_ack=False
             )
             self._channel.start_consuming()
@@ -46,8 +56,12 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
             raise MessageMiddlewareMessageError(f"Error while consuming: {e}")
 
     def stop_consuming(self):
+        """
+        Detiene el loop de consumo si estaba activo. Si no, no tiene efecto.
+        """
         try:
-            self._channel.stop_consuming()
+            if self._channel and self._channel.is_open:
+                self._channel.stop_consuming()
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError(f"Connection lost while stopping: {e}")
 
@@ -79,6 +93,8 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     def __init__(self, host, exchange_name, routing_keys):
         self._exchange_name = exchange_name
         self._routing_keys = routing_keys
+        self._channel = None
+        self._connection = None
         self._queue_name = None
 
         try:
@@ -91,6 +107,9 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
                 exchange_type='direct',
                 durable=True
             )
+            # Cola exclusiva y anónima por instancia: garantiza que en broadcast
+            # cada consumer recibe su propia copia de los mensajes.
+            # RabbitMQ la elimina automáticamente cuando la conexión se cierra.
             result = self._channel.queue_declare(queue='', exclusive=True)
             self._queue_name = result.method.queue
             for routing_key in routing_keys:
@@ -108,15 +127,10 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
         self.close()
 
     def start_consuming(self, on_message_callback):
-        def _callback(ch, method, properties, body):
-            ack = lambda: ch.basic_ack(delivery_tag=method.delivery_tag)
-            nack = lambda: ch.basic_nack(delivery_tag=method.delivery_tag)
-            on_message_callback(body, ack, nack)
-
         try:
             self._channel.basic_consume(
                 queue=self._queue_name,
-                on_message_callback=_callback,
+                on_message_callback=_build_pika_callback(on_message_callback),
                 auto_ack=False
             )
             self._channel.start_consuming()
@@ -126,8 +140,12 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
             raise MessageMiddlewareMessageError(f"Error while consuming: {e}")
 
     def stop_consuming(self):
+        """
+        Detiene el loop de consumo si estaba activo. Si no, no tiene efecto.
+        """
         try:
-            self._channel.stop_consuming()
+            if self._channel and self._channel.is_open:
+                self._channel.stop_consuming()
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError(f"Connection lost while stopping: {e}")
 
