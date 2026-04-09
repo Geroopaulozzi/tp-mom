@@ -66,3 +66,7 @@ En el `__init__`, la instancia bindea su cola anónima a cada routing key de la 
 ### Envío de mensajes
 
 `send()` publica en el exchange usando la primera routing key de la lista. El exchange rutea el mensaje a todas las colas que tienen un binding con esa key. Esto significa que el mismo código sirve tanto para un producer que publica a una sola key, como para un consumer que escucha varias.
+
+## Cómo correr
+make up    # levanta RabbitMQ y corre los tests
+make down  # detiene los contenedores
